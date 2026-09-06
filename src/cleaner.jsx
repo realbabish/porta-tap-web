@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient';
 import {
   Wrench, Camera, ShieldCheck, Image as ImageIcon, LogOut,
   AlertTriangle, Droplets, Sparkles, ShieldAlert, CheckCircle2,
-  RefreshCw, X, SmartphoneNfc
+  RefreshCw, X, SmartphoneNfc, MapPin, ChevronRight
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import confetti from 'canvas-confetti';
@@ -19,6 +19,7 @@ const TYPE_META = {
 export default function Cleaner() {
   const [unitId, setUnitId] = useState('');
   const [tickets, setTickets] = useState([]);
+  const [allActiveJobs, setAllActiveJobs] = useState([]); // NEW: Master list of all broken units
   const [cleanerName, setCleanerName] = useState('');
   const [loading, setLoading] = useState(true);
   const [resolving, setResolving] = useState(false);
@@ -27,6 +28,7 @@ export default function Cleaner() {
 
   const navigate = useNavigate();
 
+  // Fetches tickets for a specific tapped unit
   const fetchTickets = useCallback(async (id) => {
     if (!id) return;
     const { data } = await supabase
@@ -36,6 +38,16 @@ export default function Cleaner() {
       .in('status', ['pending', 'in_progress'])
       .order('created_at', { ascending: true });
     setTickets(data ?? []);
+  }, []);
+
+  // NEW: Fetches the master list of all broken units for the home screen
+  const fetchAllActiveJobs = useCallback(async () => {
+    const { data } = await supabase
+      .from('service_requests')
+      .select('*')
+      .in('status', ['pending', 'in_progress'])
+      .order('created_at', { ascending: false });
+    setAllActiveJobs(data ?? []);
   }, []);
 
   useEffect(() => {
@@ -61,17 +73,22 @@ export default function Cleaner() {
 
       setCleanerName(profile.cleaner_name);
 
-      if (id) await fetchTickets(id);
+      if (id) {
+        await fetchTickets(id);
+      } else {
+        await fetchAllActiveJobs(); // Fetch master list if sitting on home screen
+      }
+
       setLoading(false);
       setTimeout(() => setMounted(true), 50);
     };
 
     init();
-  }, [navigate, fetchTickets]);
+  }, [navigate, fetchTickets, fetchAllActiveJobs]);
 
+  // Realtime listener for the specific unit
   useEffect(() => {
     if (!unitId) return;
-
     const channel = supabase
       .channel(`unit-tickets-${unitId}`)
       .on(
@@ -80,7 +97,6 @@ export default function Cleaner() {
         () => fetchTickets(unitId)
       )
       .subscribe();
-
     return () => supabase.removeChannel(channel);
   }, [unitId, fetchTickets]);
 
@@ -119,6 +135,14 @@ export default function Cleaner() {
       setShowConfirm(false);
 
       confetti({ particleCount: 120, spread: 80, origin: { y: 0.55 }, colors: ['#34d399', '#6ee7b7', '#a7f3d0'] });
+
+      // Clear the unit ID so Paula goes back to the master list screen after fixing it
+      setTimeout(() => {
+        setUnitId('');
+        fetchAllActiveJobs();
+        window.history.pushState({}, '', '/cleaner');
+      }, 3000);
+
     } catch (err) {
       console.error('Error resolving:', err);
       alert('Failed to resolve tickets. Please try again.');
@@ -132,10 +156,19 @@ export default function Cleaner() {
     navigate('/login');
   };
 
+  // Logic for the specific tapped unit
   const ticketCount = tickets.length;
   const reasons = [...new Set(tickets.map(t => t.request_type))];
   const hasPhoto = tickets.some(t => t.user_photo_url);
   const photoUrl = tickets.find(t => t.user_photo_url)?.user_photo_url;
+
+  // Logic for grouping the master active jobs list
+  const activeUnitsMap = allActiveJobs.reduce((acc, job) => {
+    if (!acc[job.unit_id]) acc[job.unit_id] = [];
+    acc[job.unit_id].push(job);
+    return acc;
+  }, {});
+  const activeUnitIds = Object.keys(activeUnitsMap);
 
   return (
     <div className="min-h-screen bg-slate-950 text-white font-sans flex flex-col max-w-md mx-auto p-5 selection:bg-blue-500 selection:text-white">
@@ -169,13 +202,17 @@ export default function Cleaner() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Back to master list button if viewing a specific unit */}
           {unitId && (
             <button
-              onClick={() => fetchTickets(unitId)}
-              className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white hover:border-slate-600 hover:bg-slate-800 transition-all shadow-sm active:scale-95"
-              title="Refresh"
+              onClick={() => {
+                setUnitId('');
+                fetchAllActiveJobs();
+                window.history.pushState({}, '', '/cleaner');
+              }}
+              className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 transition-all active:scale-95"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
+              Overview
             </button>
           )}
           <button
@@ -183,7 +220,6 @@ export default function Cleaner() {
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-semibold text-slate-400 hover:text-rose-400 hover:border-rose-900/60 hover:bg-rose-950/20 transition-all active:scale-95"
           >
             <LogOut className="w-3.5 h-3.5" />
-            Sign Out
           </button>
         </div>
       </div>
@@ -197,26 +233,84 @@ export default function Cleaner() {
           </div>
 
         ) : !unitId ? (
-          /* No unit scanned - Radar Animation */
+          /* NO UNIT SCANNED - SHOW RADAR & ASSIGNED JOBS */
           <div
-            className="flex-1 flex flex-col items-center justify-center text-center transition-all duration-700"
+            className="flex-1 flex flex-col transition-all duration-700"
             style={{ opacity: mounted ? 1 : 0, transform: mounted ? 'translateY(0)' : 'translateY(10px)' }}
           >
-            <div className="relative w-32 h-32 flex items-center justify-center mb-6">
-              <div className="absolute inset-0 border-2 border-blue-500/30 rounded-full animate-radar" />
-              <div className="absolute inset-2 border-2 border-blue-500/20 rounded-full animate-radar" style={{ animationDelay: '0.5s' }} />
-              <div className="relative w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-800 border border-blue-400/50 rounded-2xl flex items-center justify-center shadow-[0_0_30px_rgba(37,99,235,0.4)] z-10">
-                <SmartphoneNfc className="w-8 h-8 text-white" />
+            {/* Radar Header */}
+            <div className="flex flex-col items-center justify-center py-6 text-center">
+              <div className="relative w-24 h-24 flex items-center justify-center mb-4">
+                <div className="absolute inset-0 border-2 border-blue-500/30 rounded-full animate-radar" />
+                <div className="absolute inset-2 border-2 border-blue-500/20 rounded-full animate-radar" style={{ animationDelay: '0.5s' }} />
+                <div className="relative w-12 h-12 bg-gradient-to-br from-blue-600 to-blue-800 border border-blue-400/50 rounded-xl flex items-center justify-center shadow-[0_0_30px_rgba(37,99,235,0.4)] z-10">
+                  <SmartphoneNfc className="w-6 h-6 text-white" />
+                </div>
               </div>
+              <h2 className="text-xl font-black text-white tracking-tight">Scanner Ready</h2>
+              <p className="text-xs text-slate-400 mt-1">Tap a tag to begin service</p>
             </div>
-            <h2 className="text-2xl font-black text-white tracking-tight">Awaiting Tag</h2>
-            <p className="text-sm text-slate-400 mt-2 max-w-[240px] leading-relaxed">
-              Tap your device to an NFC tag to securely load unit assignments.
-            </p>
+
+            {/* Active Jobs List */}
+            <div className="mt-4 flex-1">
+              <div className="flex items-center justify-between mb-4 px-1">
+                <p className="text-[11px] text-slate-500 uppercase tracking-widest font-semibold">
+                  Open Service Locations
+                </p>
+                <button onClick={fetchAllActiveJobs} className="text-slate-500 hover:text-white transition">
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {activeUnitIds.length === 0 ? (
+                <div className="bg-slate-900/50 border border-emerald-500/20 rounded-2xl p-6 text-center mt-2">
+                  <ShieldCheck className="w-8 h-8 text-emerald-500 mx-auto mb-3 opacity-80" />
+                  <p className="text-slate-300 text-sm font-semibold">Site is Clear!</p>
+                  <p className="text-slate-500 text-xs mt-1">No units currently require attention.</p>
+                </div>
+              ) : (
+                <div className="space-y-3 pb-8">
+                  {activeUnitIds.map((id) => {
+                    const unitJobs = activeUnitsMap[id];
+                    return (
+                      <div
+                        key={id}
+                        onClick={() => {
+                          setUnitId(id);
+                          fetchTickets(id);
+                          window.history.pushState({}, '', `?unit_id=${id}`);
+                        }}
+                        className="bg-slate-900/80 backdrop-blur-sm border border-slate-800 hover:border-blue-500/50 rounded-2xl p-4 cursor-pointer group transition-all"
+                      >
+                        <div className="flex justify-between items-center mb-2">
+                          <div className="flex items-center gap-2">
+                            <MapPin className="w-4 h-4 text-blue-400" />
+                            <span className="font-mono font-bold text-slate-200">{id}</span>
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-blue-400 transition-colors" />
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {[...new Set(unitJobs.map(j => j.request_type))].map(type => {
+                            const meta = TYPE_META[type] || TYPE_META.repair;
+                            const Icon = meta.icon;
+                            return (
+                              <span key={type} className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${meta.bg} ${meta.color} border`}>
+                                <Icon className="w-3 h-3" />
+                                {type.replace(/_/g, ' ')}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
 
         ) : ticketCount > 0 ? (
-          /* Active tickets card */
+          /* Active tickets card FOR A SPECIFIC UNIT */
           <div
             className="transition-all duration-700"
             style={{ opacity: mounted ? 1 : 0, transform: mounted ? 'translateY(0)' : 'translateY(12px)' }}
@@ -358,7 +452,7 @@ export default function Cleaner() {
           </div>
 
         ) : (
-          /* All clear */
+          /* All clear FOR THIS SPECIFIC UNIT */
           <div
             className="flex-1 flex flex-col items-center justify-center text-center transition-all duration-700"
             style={{ opacity: mounted ? 1 : 0, transform: mounted ? 'scale(1)' : 'scale(0.95)' }}
@@ -376,9 +470,16 @@ export default function Cleaner() {
                 <p className="text-sm text-slate-300 font-mono font-bold tracking-wider">{unitId}</p>
               </div>
             )}
-            <p className="text-slate-500 mt-4 max-w-[240px] text-sm leading-relaxed">
-              No active reports found. System is monitoring for new requests.
-            </p>
+            <button
+              onClick={() => {
+                setUnitId('');
+                fetchAllActiveJobs();
+                window.history.pushState({}, '', '/cleaner');
+              }}
+              className="mt-6 text-sm font-semibold text-blue-400 hover:text-blue-300 underline underline-offset-4"
+            >
+              Return to Open Jobs List
+            </button>
           </div>
         )}
       </main>
@@ -424,7 +525,6 @@ export default function Cleaner() {
         </div>
       )}
 
-      {/* Global styles for dynamic animations */}
       <style>{`
         @keyframes slideUp {
           from { opacity: 0; transform: translateY(10px); }
